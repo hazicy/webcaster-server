@@ -18,7 +18,7 @@ export class WebTransportProvider {
     this.wtServer = new Http3Server({
       port,
       host: "0.0.0.0",
-      secret: "mysecret",
+      secret: "mySecret",
       cert: readFileSync("certs/cert.pem").toString("utf-8"),
       privKey: readFileSync("certs/key.pem").toString("utf-8"),
     });

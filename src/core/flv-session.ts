@@ -1,4 +1,5 @@
-import { FlvParser, FlvTag, TagType } from "./flv-parser";
+import { TagType } from "../constants/tag-type";
+import { FlvParser, FlvTag } from "./flv-parser";
 import { EventEmitter } from "events";
 
 interface HttpClient {
