@@ -1,185 +1,212 @@
-import { TagType } from "../constants/tag-type";
-import { FlvParser, FlvTag } from "./flv-parser";
+import { FLVHeader, FLVParser, ScriptData, FLVTag } from "./flv-parser";
 import { EventEmitter } from "events";
 
-interface HttpClient {
-  id: string;
-  res: any; // HTTP Response对象
-  startTime: number;
-  lastTag?: FlvTag;
+interface StreamClient {
+  write(data: Buffer): void;
 }
 
-export class FlvSession extends FlvParser {
-  private readonly sessionId: string;
-  private readonly clients: Map<string, HttpClient>;
-  private readonly cacheSize: number;
-  private readonly tagCache: FlvTag[];
-  private readonly events: EventEmitter;
-  private firstTag?: FlvTag;
-  private lastTag?: FlvTag;
+export class FLVSession extends EventEmitter {
+  #clients: Set<StreamClient>;
+  #flvParser: FLVParser;
+  #flvHeader: FLVHeader | undefined;
+  #metadata: ScriptData | undefined;
+  #headerSent: boolean = false;
+  #gopCache: Buffer[] = [];
+  #currentGop: Buffer[] = [];
+  #waitingForKeyFrame: boolean = true;
 
-  constructor(sessionId: string, options: { cacheSize?: number } = {}) {
+  constructor() {
     super();
-    this.sessionId = sessionId;
-    this.clients = new Map();
-    this.cacheSize = options.cacheSize || 100;
-    this.tagCache = [];
-    this.events = new EventEmitter();
+    this.#clients = new Set<StreamClient>();
+    this.#flvParser = new FLVParser();
+    this.#setupEvents();
   }
 
-  public getSessionId(): string {
-    return this.sessionId;
-  }
+  #setupEvents() {
+    // 处理 FLV 头部
+    this.#flvParser.on("header", (header: FLVHeader) => {
+      if (!this.#flvHeader) {
+        this.#flvHeader = header;
+        // 创建 FLV 头部缓冲区
+        const headerBuf = Buffer.alloc(13);
+        headerBuf.write("FLV", 0, "utf-8"); // 签名
+        headerBuf.writeUInt8(header.version, 3); // 版本
+        headerBuf.writeUInt8(
+          (header.hasAudio ? 0x04 : 0) | (header.hasVideo ? 0x01 : 0),
+          4
+        ); // 标志
+        headerBuf.writeUInt32BE(9, 5); // 头部大小
+        headerBuf.writeUInt32BE(0, 9); // PreviousTagSize0
+        this.#broadcast(headerBuf);
+        this.#headerSent = true;
+      }
+    });
 
-  protected override onTag(tag: FlvTag): void {
-    // 缓存首个Tag
-    if (!this.firstTag) {
-      this.firstTag = tag;
-    }
-    this.lastTag = tag;
+    // 处理脚本数据
+    this.#flvParser.on("script", (scriptData: ScriptData) => {
+      if (scriptData.name === "onMetaData") {
+        this.#metadata = scriptData;
+      }
+      this.emit("script", scriptData);
+    });
 
-    // 缓存Tag
-    this.tagCache.push(tag);
-    if (this.tagCache.length > this.cacheSize) {
-      this.tagCache.shift();
-    }
+    // 处理音频数据
+    this.#flvParser.on("audio", (audioData) => {
+      this.emit("audio", audioData);
+    });
 
-    // 向所有客户端分发数据
-    this.distributeTag(tag);
-  }
+    // 处理视频数据
+    this.#flvParser.on("video", (videoData) => {
+      const frameType = (videoData.data[0] & 0xf0) >> 4;
+      const isKeyFrame = frameType === 1;
 
-  private distributeTag(tag: FlvTag): void {
-    for (const [clientId, client] of this.clients) {
-      try {
-        // 检查是否是关键帧
-        const isKeyFrame =
-          tag.type === TagType.VIDEO && (tag.data[0] & 0xf0) === 0x10;
-
-        // 如果客户端还没有收到过Tag,等待关键帧
-        if (!client.lastTag && !isKeyFrame) {
-          continue;
+      if (isKeyFrame) {
+        // 当遇到关键帧时,将当前 GOP 缓存替换为新的 GOP
+        if (this.#currentGop.length > 0) {
+          this.#gopCache = this.#currentGop;
+          this.#currentGop = [];
         }
-
-        // 发送Tag数据
-        this.sendTagToClient(client, tag);
-        client.lastTag = tag;
-      } catch (error) {
-        console.error(`Error sending tag to client ${clientId}:`, error);
-        this.removeClient(clientId);
+        this.#waitingForKeyFrame = false;
       }
-    }
-  }
 
-  private sendTagToClient(client: HttpClient, tag: FlvTag): void {
-    // 构建FLV Tag数据包
-    const headerSize = 11; // Tag Header大小
-    const packet = new Uint8Array(headerSize + tag.dataSize + 4); // +4 for PreviousTagSize
+      // 构建完整的 FLV Tag
+      const tagData = Buffer.alloc(11 + videoData.data.length + 4);
+      tagData.writeUInt8(0x09, 0); // 视频标签类型
+      tagData.writeUIntBE(videoData.data.length, 1, 3); // 数据大小
+      tagData.writeUIntBE(0, 4, 3); // 时间戳
+      tagData.writeUInt8(0, 7); // 时间戳扩展
+      tagData.writeUIntBE(0, 8, 3); // StreamID
+      videoData.data.copy(tagData, 11); // 视频数据
+      tagData.writeUInt32BE(11 + videoData.data.length, tagData.length - 4); // Previous Tag Size
 
-    // 写入Tag Header
-    packet[0] = tag.type;
-    packet[1] = (tag.dataSize >> 16) & 0xff;
-    packet[2] = (tag.dataSize >> 8) & 0xff;
-    packet[3] = tag.dataSize & 0xff;
-    packet[4] = (tag.timestamp >> 16) & 0xff;
-    packet[5] = (tag.timestamp >> 8) & 0xff;
-    packet[6] = tag.timestamp & 0xff;
-    packet[7] = (tag.timestamp >> 24) & 0xff; // Timestamp Extended
-    packet[8] = (tag.streamId >> 16) & 0xff;
-    packet[9] = (tag.streamId >> 8) & 0xff;
-    packet[10] = tag.streamId & 0xff;
+      if (!this.#waitingForKeyFrame) {
+        this.#currentGop.push(tagData);
+      }
 
-    // 写入Tag Data
-    packet.set(tag.data, headerSize);
-
-    // 写入PreviousTagSize
-    const previousTagSize = headerSize + tag.dataSize;
-    packet[headerSize + tag.dataSize] = (previousTagSize >> 24) & 0xff;
-    packet[headerSize + tag.dataSize + 1] = (previousTagSize >> 16) & 0xff;
-    packet[headerSize + tag.dataSize + 2] = (previousTagSize >> 8) & 0xff;
-    packet[headerSize + tag.dataSize + 3] = previousTagSize & 0xff;
-
-    // 发送数据
-    client.res.write(packet);
-  }
-
-  public addClient(clientId: string, res: any): void {
-    // 设置HTTP响应头
-    res.writeHead(200, {
-      "Content-Type": "video/x-flv",
-      Connection: "close",
-      "Cache-Control": "no-cache",
-      "Access-Control-Allow-Origin": "*",
+      this.emit("video", videoData);
     });
 
-    // 写入FLV文件头
-    const header = new Uint8Array([
-      0x46,
-      0x4c,
-      0x56, // 'FLV'
-      0x01, // Version
-      0x05, // 音视频流
-      0x00,
-      0x00,
-      0x00,
-      0x09, // Header Size
-    ]);
-    res.write(header);
-
-    // 添加客户端
-    this.clients.set(clientId, {
-      id: clientId,
-      res,
-      startTime: Date.now(),
-    });
-
-    // 如果有缓存的Tag,从最近的关键帧开始发送
-    let keyFrameIndex = -1;
-    for (let i = this.tagCache.length - 1; i >= 0; i--) {
-      const tag = this.tagCache[i];
-      if (tag.type === TagType.VIDEO && (tag.data[0] & 0xf0) === 0x10) {
-        keyFrameIndex = i;
-        break;
-      }
-    }
-
-    if (keyFrameIndex >= 0) {
-      for (let i = keyFrameIndex; i < this.tagCache.length; i++) {
-        this.sendTagToClient(this.clients.get(clientId)!, this.tagCache[i]);
-      }
-    }
-
-    // 监听客户端断开连接
-    res.on("close", () => {
-      this.removeClient(clientId);
+    // 处理错误
+    this.#flvParser.on("error", (error) => {
+      this.emit("error", error);
     });
   }
 
-  public removeClient(clientId: string): void {
-    const client = this.clients.get(clientId);
-    if (client) {
+  addClient(client: StreamClient) {
+    this.#clients.add(client);
+
+    // 如果有新客户端连接且已经有元数据,发送头部和元数据
+    if (this.#flvHeader && this.#metadata) {
       try {
-        client.res.end();
+        // 重新发送 FLV 头部
+        const headerBuf = Buffer.alloc(13);
+        headerBuf.write("FLV", 0, "utf-8");
+        headerBuf.writeUInt8(this.#flvHeader.version, 3);
+        headerBuf.writeUInt8(
+          (this.#flvHeader.hasAudio ? 0x04 : 0) |
+            (this.#flvHeader.hasVideo ? 0x01 : 0),
+          4
+        );
+        headerBuf.writeUInt32BE(9, 5);
+        headerBuf.writeUInt32BE(0, 9);
+        client.write(headerBuf);
+
+        // 重新发送元数据
+        // TODO: 将元数据重新编码为 FLV Tag
+
+        // 发送 GOP 缓存
+        if (this.#gopCache.length > 0) {
+          for (const frame of this.#gopCache) {
+            client.write(frame);
+          }
+        }
       } catch (error) {
-        console.error(`Error ending response for client ${clientId}:`, error);
+        this.emit("error", error);
       }
-      this.clients.delete(clientId);
-      this.events.emit("clientDisconnected", clientId);
     }
   }
 
-  public getClientCount(): number {
-    return this.clients.size;
+  removeClient(client: StreamClient) {
+    this.#clients.delete(client);
   }
 
-  public on(event: string, listener: (...args: any[]) => void): void {
-    this.events.on(event, listener);
-  }
+  handleData(data: Buffer) {
+    try {
+      // 如果还没解析过头部,先尝试解析
+      if (!this.#headerSent) {
+        this.#flvParser.parseHeader(data);
+      }
 
-  public destroy(): void {
-    // 断开所有客户端连接
-    for (const [clientId] of this.clients) {
-      this.removeClient(clientId);
+      // 解析 FLV Tag
+      const tagSize = this.#flvParser.parseTag(data);
+      if (tagSize) {
+        // 如果解析成功,广播数据给所有客户端
+        this.#broadcast(data);
+
+        // 检查是否需要更新 GOP 缓存
+        const tagType = data[0];
+        if (tagType === 0x09) { // 视频标签
+          const frameType = (data[11] & 0xf0) >> 4; // 第一个字节的高4位表示帧类型
+          const isKeyFrame = frameType === 1;
+
+          if (isKeyFrame) {
+            // 当遇到关键帧时,将当前 GOP 缓存替换为新的 GOP
+            if (this.#currentGop.length > 0) {
+              this.#gopCache = this.#currentGop;
+              this.#currentGop = [];
+            }
+            this.#waitingForKeyFrame = false;
+          }
+
+          if (!this.#waitingForKeyFrame) {
+            this.#currentGop.push(Buffer.from(data));
+          }
+        }
+      }
+    } catch (error) {
+      this.emit("error", error);
     }
-    this.events.removeAllListeners();
+  }
+
+  #broadcast(data: Buffer) {
+    for (const client of this.#clients) {
+      try {
+        client.write(data);
+      } catch (error) {
+        this.emit("error", error);
+        // 如果写入失败,移除该客户端
+        this.removeClient(client);
+      }
+    }
+  }
+
+  // 获取当前会话信息
+  getSessionInfo() {
+    return {
+      clientCount: this.#clients.size,
+      hasHeader: !!this.#flvHeader,
+      hasMetadata: !!this.#metadata,
+      header: this.#flvHeader,
+      metadata: this.#metadata,
+      gopCacheSize: this.#gopCache.length,
+      currentGopSize: this.#currentGop.length,
+    };
+  }
+
+  // 清除 GOP 缓存
+  clearGopCache() {
+    this.#gopCache = [];
+    this.#currentGop = [];
+    this.#waitingForKeyFrame = true;
+  }
+
+  // 设置最大 GOP 缓存大小
+  setMaxGopCacheSize(maxFrames: number) {
+    if (this.#gopCache.length > maxFrames) {
+      this.#gopCache = this.#gopCache.slice(-maxFrames);
+    }
+    if (this.#currentGop.length > maxFrames) {
+      this.#currentGop = this.#currentGop.slice(-maxFrames);
+    }
   }
 }

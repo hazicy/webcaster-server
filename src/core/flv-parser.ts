@@ -1,13 +1,15 @@
+import { Transform, type TransformCallback } from "stream";
 import type { TagType } from "../constants/tag-type";
+import { ScriptDecoder } from "./script-decoder";
 
-export interface FlvHeader {
-  signature: string; // 'FLV'
-  version: number; // 通常是1
-  flags: number; // 5表示同时包含音频和视频
-  headerSize: number; // 通常是9
+export interface FLVHeader {
+  version: number;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  headerSize: number;
 }
 
-export interface FlvTag {
+export interface FLVTag {
   type: TagType;
   dataSize: number;
   timestamp: number;
@@ -15,132 +17,164 @@ export interface FlvTag {
   data: Uint8Array;
 }
 
-export class FlvParser {
-  #buffer: Uint8Array;
-  #position: number;
+export interface ScriptData {
+  name: string;
+  metadata: Record<string, any>;
+}
 
-  constructor() {
-    this.#buffer = new Uint8Array(0);
-    this.#position = 0;
+interface AudioData {
+  soundFormat: number;
+  soundRate: number;
+  soundSize: number;
+  channels: number;
+  data: Buffer;
+}
+
+interface VideoData {
+  frameType: number;
+  codecId: number;
+  data: Buffer;
+}
+
+// 解析器选项接口
+interface FLVParserOptions {
+  maxBufferSize?: number;
+}
+
+export class FLVParser extends Transform {
+  #buffer: Buffer = Buffer.alloc(0);
+  #headerParsed: boolean = false;
+  readonly #maxBufferSize: number | undefined;
+
+  constructor(options: FLVParserOptions = {}) {
+    super();
+    this.#maxBufferSize = options.maxBufferSize ?? 10 * 2024 * 2024;
   }
 
-  public pushData(data: Uint8Array) {
-    const newBuffer = new Uint8Array(this.#buffer.length + data.length);
-    newBuffer.set(this.#buffer);
-    newBuffer.set(data, this.#buffer.length);
-    this.#buffer = newBuffer;
-    this.parse();
-  }
+  parseHeader(chunk: Buffer): boolean {
+    if (chunk.length < 9) return false;
 
-  private parse() {
-    // 确保至少有9字节用于解析文件头
-    if (this.#buffer.length < 9 && this.#position === 0) {
-      return;
-    }
-
-    // 第一次解析文件头
-    if (this.#position === 0) {
-      const header = this.parseHeader();
-      if (!header) return;
-      this.#position = header.headerSize;
-    }
-
-    // 解析连续的Tag
-    while (this.#position < this.#buffer.length) {
-      // Tag header = 11 bytes
-      // 确保有足够的数据解析Tag头部
-      if (this.#buffer.length - this.#position < 11) {
-        break;
-      }
-
-      const dataSize =
-        (this.#buffer[this.#position + 1] << 16) |
-        (this.#buffer[this.#position + 2] << 8) |
-        this.#buffer[this.#position + 3];
-
-      // 确保有足够的数据解析整个Tag
-      if (this.#buffer.length - this.#position < 11 + dataSize + 4) {
-        break;
-      }
-
-      const tag = this.parseTag();
-      if (!tag) break;
-
-      // 发出解析后的Tag
-      this.onTag(tag);
-
-      // 跳过PreviousTagSize(4字节)
-      this.#position += 4;
-    }
-
-    // 移除已处理的数据
-    if (this.#position > 0) {
-      this.#buffer = this.#buffer.slice(this.#position);
-      this.#position = 0;
-    }
-  }
-
-  private parseHeader(): FlvHeader | null {
-    if (this.#buffer.length < 9) return null;
-
-    const signature = String.fromCharCode(
-      this.#buffer[0],
-      this.#buffer[1],
-      this.#buffer[2]
-    );
+    const signature = chunk.toString("utf-8", 0, 3);
     if (signature !== "FLV") {
       throw new Error("Invalid FLV signature");
     }
 
-    return {
-      signature,
-      version: this.#buffer[3],
-      flags: this.#buffer[4],
-      headerSize:
-        (this.#buffer[5] << 24) |
-        (this.#buffer[6] << 16) |
-        (this.#buffer[7] << 8) |
-        this.#buffer[8],
+    const header: FLVHeader = {
+      version: chunk[3],
+      hasVideo: (chunk[4] & 0x01) !== 0,
+      hasAudio: (chunk[4] & 0x04) !== 0,
+      headerSize: chunk.readUint32BE(5),
     };
+
+    if (header.headerSize !== 9) {
+      throw new Error("Invalid FLV header size");
+    }
+
+    this.push(chunk);
+    return true;
   }
 
-  private parseTag(): FlvTag | null {
-    if (this.#buffer.length - this.#position < 11) return null;
+  parseTag(chunk: Buffer) {
+    if (chunk.length < 11) return false;
 
-    const type = this.#buffer[this.#position] as TagType;
-    const dataSize =
-      (this.#buffer[this.#position + 1] << 16) |
-      (this.#buffer[this.#position + 2] << 8) |
-      this.#buffer[this.#position + 3];
+    const tagType = chunk[0];
+    const dataSize = chunk.readUintBE(1, 3);
+    const timestamp = chunk.readUintBE(4, 3) | (chunk[7] << 24);
+    const streamId = chunk.readUintBE(8, 3);
 
-    const timestamp =
-      (this.#buffer[this.#position + 7] << 24) |
-      (this.#buffer[this.#position + 4] << 16) |
-      (this.#buffer[this.#position + 5] << 8) |
-      this.#buffer[this.#position + 6];
+    if (chunk.length < 11 + dataSize) return false;
 
-    const streamId =
-      (this.#buffer[this.#position + 8] << 16) |
-      (this.#buffer[this.#position + 9] << 8) |
-      this.#buffer[this.#position + 10];
+    const data = chunk.subarray(11, 11 + dataSize);
 
-    const data = this.#buffer.slice(
-      this.#position + 11,
-      this.#position + 11 + dataSize
-    );
+    switch (tagType) {
+      case 0x08:
+        this.parseAudioData(data, timestamp);
+        break;
+      case 0x09:
+        this.parseVideoData(data, timestamp);
+        break;
+      case 0x12:
+        this.parseScriptData(data);
+        break;
+      default:
+        break;
+    }
 
-    this.#position += 11 + dataSize;
-
-    return {
-      type,
-      dataSize,
-      timestamp,
-      streamId,
-      data,
-    };
+    return 11 + dataSize;
   }
 
-  protected onTag(tag: FlvTag): void {
-    // 由子类实现具体的Tag处理逻辑
+  parseAudioData(data: Buffer, timestamp: number) {
+    const soundFormat = data[0] & (0xf0 >> 4);
+    const soundRate = (data[0] & 0x0c) >> 2;
+    const soundSize = (data[0] & 0x02) >> 1;
+    const soundType = data[0] & 0x01;
+
+    const audioData: AudioData = {
+      soundFormat,
+      soundRate: [5500, 11025, 22050, 44100][soundRate],
+      soundSize: soundSize ? 16 : 8,
+      channels: soundType ? 2 : 1,
+      data: data.subarray(1),
+    };
+
+    this.emit("audio", audioData);
+  }
+
+  parseVideoData(data: Buffer, timestamp: number) {
+    const frameType = (data[0] & 0xf0) >> 4;
+    const codecId = data[0] & 0x0f;
+
+    const videoData: VideoData = {
+      frameType,
+      codecId,
+      data: data.subarray(1),
+    };
+
+    this.emit("video", videoData);
+  }
+
+  parseScriptData(data: Buffer) {
+    try {
+      const decoder = new ScriptDecoder(data);
+      const { name, data: metadata } = decoder.decode();
+      const scriptData: ScriptData = {
+        name,
+        metadata,
+      };
+      this.emit("script", scriptData);
+    } catch (error) {
+      this.emit("error", error);
+    }
+  }
+
+  override _transform(
+    chunk: any,
+    encoding: BufferEncoding,
+    callback: TransformCallback
+  ): void {
+    this.#buffer = Buffer.concat([this.#buffer, chunk]);
+
+    try {
+      if (!this.#headerParsed) {
+        this.parseHeader(this.#buffer);
+        this.#headerParsed = true;
+        this.#buffer = this.#buffer.subarray(9);
+      }
+
+      while (this.#buffer.length > 0) {
+        const tagSize = this.parseTag(this.#buffer);
+        if (!tagSize) break;
+
+        this.#buffer = this.#buffer.subarray(tagSize + 4);
+      }
+
+      callback();
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  override _flush(callback: TransformCallback): void {
+    callback();
   }
 }

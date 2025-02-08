@@ -1,6 +1,6 @@
 {
-  "name": "mediatea",
-  "version": "1.0.0",
+  "name": "webcaster-server",
+  "version": "0.0.1",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -10,16 +10,17 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "description": "",
   "devDependencies": {
     "@types/node": "^22.13.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
   },
   "dependencies": {
-    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.51.0",
+    "@fails-components/webtransport": "1.1.4",
     "reflect-metadata": "^0.2.1",
-    "@fails-components/webtransport": "1.1.4"
+    "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.51.0"
   }
 }
