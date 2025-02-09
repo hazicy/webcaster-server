@@ -19,7 +19,7 @@ export interface FLVTag {
 
 export interface ScriptData {
   name: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 interface AudioData {
@@ -36,19 +36,12 @@ interface VideoData {
   data: Buffer;
 }
 
-// 解析器选项接口
-interface FLVParserOptions {
-  maxBufferSize?: number;
-}
-
 export class FLVParser extends Transform {
   #buffer: Buffer = Buffer.alloc(0);
   #headerParsed: boolean = false;
-  readonly #maxBufferSize: number | undefined;
 
-  constructor(options: FLVParserOptions = {}) {
+  constructor() {
     super();
-    this.#maxBufferSize = options.maxBufferSize ?? 10 * 2024 * 2024;
   }
 
   parseHeader(chunk: Buffer): boolean {
@@ -88,10 +81,10 @@ export class FLVParser extends Transform {
 
     switch (tagType) {
       case 0x08:
-        this.parseAudioData(data, timestamp);
+        this.parseAudioData(data);
         break;
       case 0x09:
-        this.parseVideoData(data, timestamp);
+        this.parseVideoData(data);
         break;
       case 0x12:
         this.parseScriptData(data);
@@ -103,7 +96,7 @@ export class FLVParser extends Transform {
     return 11 + dataSize;
   }
 
-  parseAudioData(data: Buffer, timestamp: number) {
+  parseAudioData(data: Buffer) {
     const soundFormat = data[0] & (0xf0 >> 4);
     const soundRate = (data[0] & 0x0c) >> 2;
     const soundSize = (data[0] & 0x02) >> 1;
@@ -120,7 +113,7 @@ export class FLVParser extends Transform {
     this.push(audioData);
   }
 
-  parseVideoData(data: Buffer, timestamp: number) {
+  parseVideoData(data: Buffer) {
     const frameType = (data[0] & 0xf0) >> 4;
     const codecId = data[0] & 0x0f;
 
@@ -146,7 +139,7 @@ export class FLVParser extends Transform {
   }
 
   override _transform(
-    chunk: any,
+    chunk: Buffer,
     encoding: BufferEncoding,
     callback: TransformCallback
   ): void {

@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@fails-components/webtransport": "1.1.4",
+    "fastify": "^5.2.1",
     "reflect-metadata": "^0.2.1",
     "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.51.0"
   }

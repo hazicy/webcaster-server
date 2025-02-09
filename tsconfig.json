@@ -1,10 +1,11 @@
 {
   "compilerOptions": {
     "target": "es2020",
-    "module": "ES6",
+    "module": "ESNext",
     "lib": [
       "es2020"
     ],
+    "moduleResolution": "bundler",
     "outDir": "./dist",
     "strict": true,
     "esModuleInterop": true,
