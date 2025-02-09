@@ -1,23 +1,29 @@
 export class Logger {
-  private context: string;
+  private static prefix: string = "";
 
-  constructor(context: string) {
-    this.context = context;
+  static setPrefix(prefix: string): void {
+    Logger.prefix = prefix;
   }
 
-  info(...args: any[]) {
-    console.log(`[${this.context}] [INFO]`, ...args);
+  private static log(level: string, message: string, ...args: any[]): void {
+    const timestamp = new Date().toISOString();
+    const prefixString = Logger.prefix ? `[${Logger.prefix}] ` : "";
+    console.log(`${timestamp} ${level} ${prefixString}${message}`, ...args);
   }
 
-  error(...args: any[]) {
-    console.error(`[${this.context}] [ERROR]`, ...args);
+  static info(message: string, ...args: any[]): void {
+    Logger.log("[INFO]", message, ...args);
   }
 
-  warn(...args: any[]) {
-    console.warn(`[${this.context}] [WARN]`, ...args);
+  static warn(message: string, ...args: any[]): void {
+    Logger.log("[WARN]", message, ...args);
   }
 
-  debug(...args: any[]) {
-    console.debug(`[${this.context}] [DEBUG]`, ...args);
+  static error(message: string, ...args: any[]): void {
+    Logger.log("[ERROR]", message, ...args);
+  }
+
+  static debug(message: string, ...args: any[]): void {
+    Logger.log("[DEBUG]", message, ...args);
   }
 }

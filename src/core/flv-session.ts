@@ -1,95 +1,33 @@
+import { Writable } from "stream";
 import { FLVHeader, FLVParser, ScriptData, FLVTag } from "./flv-parser";
-import { EventEmitter } from "events";
+import type { Http2ServerRequest, Http2ServerResponse } from "http2";
 
 interface StreamClient {
   write(data: Buffer): void;
 }
 
-export class FLVSession extends EventEmitter {
-  #clients: Set<StreamClient>;
+export class FLVSession extends Writable {
   #flvParser: FLVParser;
+  #clients: Set<StreamClient>;
   #flvHeader: FLVHeader | undefined;
   #metadata: ScriptData | undefined;
-  #headerSent: boolean = false;
   #gopCache: Buffer[] = [];
   #currentGop: Buffer[] = [];
+  #req: Http2ServerRequest;
+  #res: Http2ServerResponse;
+  #headerSent: boolean = false;
   #waitingForKeyFrame: boolean = true;
 
-  constructor() {
+  constructor(req: Http2ServerRequest, res: Http2ServerResponse) {
     super();
-    this.#clients = new Set<StreamClient>();
     this.#flvParser = new FLVParser();
-    this.#setupEvents();
+    this.#clients = new Set<StreamClient>();
+    this.#req = req;
+    this.#res = res;
   }
 
-  #setupEvents() {
-    // 处理 FLV 头部
-    this.#flvParser.on("header", (header: FLVHeader) => {
-      if (!this.#flvHeader) {
-        this.#flvHeader = header;
-        // 创建 FLV 头部缓冲区
-        const headerBuf = Buffer.alloc(13);
-        headerBuf.write("FLV", 0, "utf-8"); // 签名
-        headerBuf.writeUInt8(header.version, 3); // 版本
-        headerBuf.writeUInt8(
-          (header.hasAudio ? 0x04 : 0) | (header.hasVideo ? 0x01 : 0),
-          4
-        ); // 标志
-        headerBuf.writeUInt32BE(9, 5); // 头部大小
-        headerBuf.writeUInt32BE(0, 9); // PreviousTagSize0
-        this.#broadcast(headerBuf);
-        this.#headerSent = true;
-      }
-    });
-
-    // 处理脚本数据
-    this.#flvParser.on("script", (scriptData: ScriptData) => {
-      if (scriptData.name === "onMetaData") {
-        this.#metadata = scriptData;
-      }
-      this.emit("script", scriptData);
-    });
-
-    // 处理音频数据
-    this.#flvParser.on("audio", (audioData) => {
-      this.emit("audio", audioData);
-    });
-
-    // 处理视频数据
-    this.#flvParser.on("video", (videoData) => {
-      const frameType = (videoData.data[0] & 0xf0) >> 4;
-      const isKeyFrame = frameType === 1;
-
-      if (isKeyFrame) {
-        // 当遇到关键帧时,将当前 GOP 缓存替换为新的 GOP
-        if (this.#currentGop.length > 0) {
-          this.#gopCache = this.#currentGop;
-          this.#currentGop = [];
-        }
-        this.#waitingForKeyFrame = false;
-      }
-
-      // 构建完整的 FLV Tag
-      const tagData = Buffer.alloc(11 + videoData.data.length + 4);
-      tagData.writeUInt8(0x09, 0); // 视频标签类型
-      tagData.writeUIntBE(videoData.data.length, 1, 3); // 数据大小
-      tagData.writeUIntBE(0, 4, 3); // 时间戳
-      tagData.writeUInt8(0, 7); // 时间戳扩展
-      tagData.writeUIntBE(0, 8, 3); // StreamID
-      videoData.data.copy(tagData, 11); // 视频数据
-      tagData.writeUInt32BE(11 + videoData.data.length, tagData.length - 4); // Previous Tag Size
-
-      if (!this.#waitingForKeyFrame) {
-        this.#currentGop.push(tagData);
-      }
-
-      this.emit("video", videoData);
-    });
-
-    // 处理错误
-    this.#flvParser.on("error", (error) => {
-      this.emit("error", error);
-    });
+  run() {
+    this.#flvParser.pipe(this);
   }
 
   addClient(client: StreamClient) {
@@ -145,7 +83,8 @@ export class FLVSession extends EventEmitter {
 
         // 检查是否需要更新 GOP 缓存
         const tagType = data[0];
-        if (tagType === 0x09) { // 视频标签
+        if (tagType === 0x09) {
+          // 视频标签
           const frameType = (data[11] & 0xf0) >> 4; // 第一个字节的高4位表示帧类型
           const isKeyFrame = frameType === 1;
 
@@ -193,20 +132,21 @@ export class FLVSession extends EventEmitter {
     };
   }
 
-  // 清除 GOP 缓存
-  clearGopCache() {
-    this.#gopCache = [];
-    this.#currentGop = [];
-    this.#waitingForKeyFrame = true;
+  override _write(
+    chunk: any,
+    encoding: BufferEncoding,
+    callback: (error?: Error | null) => void
+  ): void {
+    try {
+      this.#res.write(chunk);
+      callback();
+    } catch (error) {
+      callback(error as Error);
+    }
   }
 
-  // 设置最大 GOP 缓存大小
-  setMaxGopCacheSize(maxFrames: number) {
-    if (this.#gopCache.length > maxFrames) {
-      this.#gopCache = this.#gopCache.slice(-maxFrames);
-    }
-    if (this.#currentGop.length > maxFrames) {
-      this.#currentGop = this.#currentGop.slice(-maxFrames);
-    }
-  }
+  _destroy(
+    error: Error | null,
+    callback: (error?: Error | null) => void
+  ): void {}
 }

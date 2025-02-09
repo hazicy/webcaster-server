@@ -1,0 +1,18 @@
+{
+  "configurations": [
+    {
+      "name": "Launch Program",
+      "program": "${workspaceFolder}/src/index.ts",
+      "request": "launch",
+      "skipFiles": [
+        "<node_internals>/**"
+      ],
+      "type": "node",
+      "runtimeArgs": [
+        "--trace-deprecation",
+        "--import",
+        "@swc-node/register/esm-register"
+      ]
+    }
+  ]
+}

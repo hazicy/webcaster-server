@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { Injectable } from "../core/injector";
-import { FlvSession } from "../core/flv-session";
+import { FLVSession } from "../core/flv-session";
 import { readFileSync } from "fs";
 import { Http3Server } from "@fails-components/webtransport";
 import { createServer } from "http";
@@ -10,7 +10,7 @@ export class WebTransportProvider {
   private server: ReturnType<typeof createServer> | null = null;
   private wtServer: Http3Server | null = null;
 
-  constructor(private flvSession: FlvSession) {}
+  constructor(private flvSession: FLVSession) {}
 
   private async setupWebTransportServer(port: number) {
     if (!this.server) return;

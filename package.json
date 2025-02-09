@@ -4,17 +4,16 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "ts-node ./src/index.ts",
-    "build": "tsc",
-    "dev": "ts-node-dev --respawn src/index.ts"
+    "start": "node --trace-deprecation --import @swc-node/register/esm-register src/index.ts",
+    "build": "tsc"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "description": "",
   "devDependencies": {
+    "@swc-node/register": "^1.10.9",
     "@types/node": "^22.13.0",
-    "ts-node": "^10.9.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.5"
   },

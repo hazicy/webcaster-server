@@ -17,5 +17,4 @@ jspm_packages/
 # Optional yarn cache directory
 .yarn/
 
-# Optional VS Code directory
-.vscode/
+dist

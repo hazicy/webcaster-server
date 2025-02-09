@@ -117,7 +117,7 @@ export class FLVParser extends Transform {
       data: data.subarray(1),
     };
 
-    this.emit("audio", audioData);
+    this.push(audioData);
   }
 
   parseVideoData(data: Buffer, timestamp: number) {
@@ -130,7 +130,7 @@ export class FLVParser extends Transform {
       data: data.subarray(1),
     };
 
-    this.emit("video", videoData);
+    this.push(videoData);
   }
 
   parseScriptData(data: Buffer) {
@@ -141,10 +141,8 @@ export class FLVParser extends Transform {
         name,
         metadata,
       };
-      this.emit("script", scriptData);
-    } catch (error) {
-      this.emit("error", error);
-    }
+      this.push(scriptData);
+    } catch (error) {}
   }
 
   override _transform(

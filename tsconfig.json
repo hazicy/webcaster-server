@@ -2,7 +2,6 @@
   "compilerOptions": {
     "target": "es2020",
     "module": "ES6",
-    "moduleResolution": "node",
     "lib": [
       "es2020"
     ],
@@ -13,7 +12,6 @@
     "emitDecoratorMetadata": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
     "declaration": true,
     "sourceMap": true
   },
