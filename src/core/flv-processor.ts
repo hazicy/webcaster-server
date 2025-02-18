@@ -1,6 +1,14 @@
 import { Transform, type TransformCallback } from "stream";
 import type { TagType } from "../constants/tag-type";
 import { ScriptDecoder } from "./script-decoder";
+import type {
+  AudioData,
+  MediaPacket,
+  VideoData,
+  ScriptData,
+} from "../interfaces/packet-type";
+import { Logger } from "../utils/logger";
+import type { MediaProcessor } from "../interfaces/media-processor";
 
 export interface FLVHeader {
   version: number;
@@ -17,31 +25,16 @@ export interface FLVTag {
   data: Uint8Array;
 }
 
-export interface ScriptData {
-  name: string;
-  metadata: Record<string, unknown>;
-}
-
-interface AudioData {
-  soundFormat: number;
-  soundRate: number;
-  soundSize: number;
-  channels: number;
-  data: Buffer;
-}
-
-interface VideoData {
-  frameType: number;
-  codecId: number;
-  data: Buffer;
-}
-
-export class FLVParser extends Transform {
+export class FLVProcessor extends Transform implements MediaProcessor {
   #buffer: Buffer = Buffer.alloc(0);
   #headerParsed: boolean = false;
 
   constructor() {
     super();
+  }
+
+  process(data: Buffer | object): void {
+    console.log(data);
   }
 
   parseHeader(chunk: Buffer): boolean {
@@ -73,7 +66,6 @@ export class FLVParser extends Transform {
     const tagType = chunk[0];
     const dataSize = chunk.readUintBE(1, 3);
     const timestamp = chunk.readUintBE(4, 3) | (chunk[7] << 24);
-    const streamId = chunk.readUintBE(8, 3);
 
     if (chunk.length < 11 + dataSize) return false;
 
@@ -81,10 +73,10 @@ export class FLVParser extends Transform {
 
     switch (tagType) {
       case 0x08:
-        this.parseAudioData(data);
+        this.parseAudioData(data, timestamp, dataSize);
         break;
       case 0x09:
-        this.parseVideoData(data);
+        this.parseVideoData(data, timestamp, dataSize);
         break;
       case 0x12:
         this.parseScriptData(data);
@@ -96,24 +88,32 @@ export class FLVParser extends Transform {
     return 11 + dataSize;
   }
 
-  parseAudioData(data: Buffer) {
+  parseAudioData(data: Buffer, timestamp: number, size: number) {
     const soundFormat = data[0] & (0xf0 >> 4);
     const soundRate = (data[0] & 0x0c) >> 2;
     const soundSize = (data[0] & 0x02) >> 1;
     const soundType = data[0] & 0x01;
 
     const audioData: AudioData = {
-      soundFormat,
-      soundRate: [5500, 11025, 22050, 44100][soundRate],
-      soundSize: soundSize ? 16 : 8,
+      format: soundFormat,
+      sampleRate: [5500, 11025, 22050, 44100][soundRate],
+      sampleSize: soundSize ? 16 : 8,
       channels: soundType ? 2 : 1,
       data: data.subarray(1),
     };
 
-    this.push(audioData);
+    const packet: MediaPacket<"audio"> = {
+      type: "audio",
+      data: audioData,
+      dts: timestamp,
+      pts: timestamp,
+      size,
+    };
+
+    this.push(packet);
   }
 
-  parseVideoData(data: Buffer) {
+  parseVideoData(data: Buffer, timestamp: number, size: number) {
     const frameType = (data[0] & 0xf0) >> 4;
     const codecId = data[0] & 0x0f;
 
@@ -123,7 +123,15 @@ export class FLVParser extends Transform {
       data: data.subarray(1),
     };
 
-    this.push(videoData);
+    const packet: MediaPacket<"video"> = {
+      type: "video",
+      data: videoData,
+      dts: timestamp,
+      pts: timestamp,
+      size,
+    };
+
+    this.push(packet);
   }
 
   parseScriptData(data: Buffer) {
@@ -135,7 +143,9 @@ export class FLVParser extends Transform {
         metadata,
       };
       this.push(scriptData);
-    } catch (error) {}
+    } catch (error) {
+      Logger.error(error instanceof Error ? error.message : "Unknown error");
+    }
   }
 
   override _transform(
@@ -154,6 +164,7 @@ export class FLVParser extends Transform {
 
       while (this.#buffer.length > 0) {
         const tagSize = this.parseTag(this.#buffer);
+
         if (!tagSize) break;
 
         this.#buffer = this.#buffer.subarray(tagSize + 4);
@@ -162,6 +173,7 @@ export class FLVParser extends Transform {
       callback();
     } catch (error) {
       callback(error instanceof Error ? error : new Error(String(error)));
+      Logger.error(error instanceof Error ? error.message : "Unknown error");
     }
   }
 

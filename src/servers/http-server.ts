@@ -1,8 +1,9 @@
 import Fastify from "fastify";
-import { FLVSession } from "../core/flv-session";
+import type { Context } from "../core/context";
+import { FLVHandler } from "../core/flv-handler";
 
-export class HttpEgress {
-  constructor() {}
+export class HttpServer {
+  constructor(private ctx: Context) {}
 
   run() {
     const fastify = Fastify({
@@ -12,8 +13,8 @@ export class HttpEgress {
     fastify.get<{ Params: { app: string; name: string } }>(
       "/:app/:name.flv",
       (request, reply) => {
-        const session = new FLVSession(request, reply);
-        session.run();
+        const handler = new FLVHandler(this.ctx, request, reply);
+        handler.run();
       }
     );
 
