@@ -17,7 +17,7 @@ export interface VideoData {
   data: Buffer;
 }
 
-export interface MediaPacket<T extends "audio" | "video"> {
+export interface StreamPacket<T extends "audio" | "video"> {
   type: T;
   pts: number;
   dts: number;

@@ -1,3 +1,3 @@
-export interface MediaProcessor {
+export interface StreamProcessor {
   process(data: Buffer | object): void;
 }

@@ -3,12 +3,22 @@ import type { TagType } from "../constants/tag-type";
 import { ScriptDecoder } from "./script-decoder";
 import type {
   AudioData,
-  MediaPacket,
+  StreamPacket,
   VideoData,
   ScriptData,
 } from "../interfaces/packet-type";
 import { Logger } from "../utils/logger";
-import type { MediaProcessor } from "../interfaces/media-processor";
+import type { StreamProcessor } from "../interfaces/stream-process";
+
+const FLV_SIGNATURE = "FLV";
+const FLV_HEADER_SIZE = 9;
+const TAG_HEADER_SIZE = 11;
+const PREVIOUS_TAG_SIZE = 4;
+
+interface ParserResult {
+  parsed: boolean;
+  consumed: number;
+}
 
 export interface FLVHeader {
   version: number;
@@ -25,7 +35,7 @@ export interface FLVTag {
   data: Uint8Array;
 }
 
-export class FLVProcessor extends Transform implements MediaProcessor {
+export class FLVProcessor extends Transform implements StreamProcessor {
   #buffer: Buffer = Buffer.alloc(0);
   #headerParsed: boolean = false;
 
@@ -37,11 +47,15 @@ export class FLVProcessor extends Transform implements MediaProcessor {
     console.log(data);
   }
 
-  parseHeader(chunk: Buffer): boolean {
-    if (chunk.length < 9) return false;
+  parseHeader(chunk: Buffer): ParserResult {
+    if (chunk.length < FLV_HEADER_SIZE)
+      return {
+        parsed: false,
+        consumed: 0,
+      };
 
     const signature = chunk.toString("utf-8", 0, 3);
-    if (signature !== "FLV") {
+    if (signature !== FLV_SIGNATURE) {
       throw new Error("Invalid FLV signature");
     }
 
@@ -57,19 +71,32 @@ export class FLVProcessor extends Transform implements MediaProcessor {
     }
 
     this.push(chunk);
-    return true;
+    return {
+      parsed: true,
+      consumed: 9,
+    };
   }
 
-  parseTag(chunk: Buffer) {
-    if (chunk.length < 11) return false;
+  parseTag(chunk: Buffer): ParserResult {
+    if (chunk.length < TAG_HEADER_SIZE)
+      return {
+        parsed: false,
+        consumed: 0,
+      };
 
     const tagType = chunk[0];
     const dataSize = chunk.readUintBE(1, 3);
     const timestamp = chunk.readUintBE(4, 3) | (chunk[7] << 24);
+    const totalSize = TAG_HEADER_SIZE + dataSize + PREVIOUS_TAG_SIZE;
 
-    if (chunk.length < 11 + dataSize) return false;
+    if (totalSize)
+      return {
+        parsed: false,
+        consumed: 0,
+      };
 
-    const data = chunk.subarray(11, 11 + dataSize);
+    const data = chunk.subarray(TAG_HEADER_SIZE, TAG_HEADER_SIZE + dataSize);
+    this.ensureCapacity(totalSize);
 
     switch (tagType) {
       case 0x08:
@@ -85,7 +112,10 @@ export class FLVProcessor extends Transform implements MediaProcessor {
         break;
     }
 
-    return 11 + dataSize;
+    return {
+      parsed: true,
+      consumed: totalSize,
+    };
   }
 
   parseAudioData(data: Buffer, timestamp: number, size: number) {
@@ -102,7 +132,7 @@ export class FLVProcessor extends Transform implements MediaProcessor {
       data: data.subarray(1),
     };
 
-    const packet: MediaPacket<"audio"> = {
+    const packet: StreamPacket<"audio"> = {
       type: "audio",
       data: audioData,
       dts: timestamp,
@@ -113,7 +143,7 @@ export class FLVProcessor extends Transform implements MediaProcessor {
     this.push(packet);
   }
 
-  parseVideoData(data: Buffer, timestamp: number, size: number) {
+  parseVideoData(data: Buffer, timestamp: number, size: number): void {
     const frameType = (data[0] & 0xf0) >> 4;
     const codecId = data[0] & 0x0f;
 
@@ -123,7 +153,7 @@ export class FLVProcessor extends Transform implements MediaProcessor {
       data: data.subarray(1),
     };
 
-    const packet: MediaPacket<"video"> = {
+    const packet: StreamPacket<"video"> = {
       type: "video",
       data: videoData,
       dts: timestamp,
@@ -148,6 +178,15 @@ export class FLVProcessor extends Transform implements MediaProcessor {
     }
   }
 
+  ensureCapacity(capacity: number) {
+    if (this.#buffer.length < capacity) {
+      this.#buffer = Buffer.concat([
+        this.#buffer,
+        Buffer.allocUnsafe(capacity - this.#buffer.length),
+      ]);
+    }
+  }
+
   override _transform(
     chunk: Buffer,
     encoding: BufferEncoding,
@@ -163,11 +202,11 @@ export class FLVProcessor extends Transform implements MediaProcessor {
       }
 
       while (this.#buffer.length > 0) {
-        const tagSize = this.parseTag(this.#buffer);
+        const parsedInfo = this.parseTag(this.#buffer);
 
-        if (!tagSize) break;
-
-        this.#buffer = this.#buffer.subarray(tagSize + 4);
+        if (parsedInfo.parsed) {
+          this.#buffer = this.#buffer.subarray(parsedInfo.consumed);
+        }
       }
 
       callback();
@@ -175,9 +214,5 @@ export class FLVProcessor extends Transform implements MediaProcessor {
       callback(error instanceof Error ? error : new Error(String(error)));
       Logger.error(error instanceof Error ? error.message : "Unknown error");
     }
-  }
-
-  override _flush(callback: TransformCallback): void {
-    callback();
   }
 }

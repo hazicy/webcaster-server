@@ -1,55 +1,32 @@
-import type { FastifyReply, FastifyRequest } from "fastify";
 import { pipeline, Writable } from "stream";
 import type { Context } from "./context";
 import { FLVProcessor } from "./flv-processor";
+import { Logger } from "../utils/logger";
 
-export abstract class StreamSession extends Writable {
+export class FLVHandler extends Writable {
   protected gopCache: Buffer[] = [];
   protected currentGop: Buffer[] = [];
-  protected ip: string;
-  protected streamApp: string;
-  protected streamName: string;
   protected waitingForKeyFrame: boolean = true;
-
-  constructor(
-    protected ctx: Context,
-    protected req: FastifyRequest<{
-      Params: {
-        app: string;
-        name: string;
-      };
-    }>,
-    protected res: FastifyReply
-  ) {
+  constructor(protected ctx: Context, private streamName: string) {
     super();
-    this.ip = req.ip;
-    this.streamApp = req.params.app;
-    this.streamName = req.params.name;
-  }
-}
-
-export class FLVHandler extends StreamSession {
-  constructor(
-    protected ctx: Context,
-    protected req: FastifyRequest<{
-      Params: {
-        app: string;
-        name: string;
-      };
-    }>,
-    protected res: FastifyReply
-  ) {
-    super(ctx, req, res);
   }
 
   run() {
-    const roomId = this.req.url.split("/").pop();
-    if (roomId) {
-      const readable = this.ctx.sessions.get(roomId);
-      const processor = new FLVProcessor();
+    if (this.streamName) {
+      const readable = this.ctx.sources.get(this.streamName);
 
       if (readable) {
-        pipeline(readable, processor, this);
+        const processor = new FLVProcessor();
+
+        pipeline(readable, processor, this, (err) => {
+          if (err) {
+            Logger.error(`Pipeline failed: ${err.message}`);
+          }
+        });
+      } else {
+        Logger.error(
+          `No readable stream found for room ID: ${this.streamName}`
+        );
       }
     }
   }
@@ -60,7 +37,7 @@ export class FLVHandler extends StreamSession {
     callback: (error?: Error | null) => void
   ): void {
     try {
-      this.res.send(chunk);
+      this.ctx.streamHub.emit(this.streamName, chunk);
       callback();
     } catch (error) {
       callback(error as Error);

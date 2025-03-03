@@ -4,9 +4,11 @@ import { Logger } from "../utils/logger";
 import type { ClientProvider } from "../interfaces/client-provider";
 import { Readable } from "stream";
 import type { Context } from "../core/context";
+import { FLVHandler } from "../core/flv-handler";
 
 interface WSUserData {
-  roomId: string; // 存储路径信息
+  streamApp?: string;
+  streamName: string; // 存储路径信息
 }
 
 export class WebSocketProvider implements ClientProvider {
@@ -25,11 +27,11 @@ export class WebSocketProvider implements ClientProvider {
       maxPayloadLength: 16 * 1024 * 1024,
       upgrade: (res, req, context) => {
         // 在 upgrade 时获取路径
-        const path = req.getUrl();
+        const streamName = req.getUrl().split("/").pop()!;
 
         // 创建 userData 对象，用于存储路径信息
         const userData: WSUserData = {
-          roomId: path,
+          streamName,
         };
 
         // 完成 upgrade，传入 userData
@@ -42,19 +44,28 @@ export class WebSocketProvider implements ClientProvider {
         );
       },
       open: (ws) => {
-        const roomId = ws.getUserData().roomId.split("/")[2];
+        const streamName = ws.getUserData().streamName;
         const readable = new Readable({
           read() {},
         });
 
-        this.ctx.sessions.set(roomId, readable);
+        this.ctx.sources.set(streamName, readable);
 
-        Logger.info(`A WebSocket connected, roomId: ${roomId}`);
+        const handler = new FLVHandler(this.ctx, streamName);
+        handler.run();
+
+        Logger.info(`A WebSocket connected, streamName: ${streamName}`);
       },
       message: (ws, message, isBinary) => {
         if (isBinary) {
-          const roomId = ws.getUserData().roomId.split("/")[2];
-          this.ctx.sessions.get(roomId)?.push(Buffer.from(message));
+          try {
+            const streamName = ws.getUserData().streamName;
+            this.ctx.sources.get(streamName)?.push(Buffer.from(message));
+          } catch (error) {
+            Logger.error(
+              error instanceof Error ? error.message : "Unknown error"
+            );
+          }
         }
       },
       close: (_, code, message) => {

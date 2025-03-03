@@ -1,12 +1,15 @@
 import type { Readable } from "stream";
+import { StreamHub } from "./stream-hub";
 
-type streamName = string;
-type rawStream = Readable;
+type StreamName = string;
+type StreamSource = Readable;
 
 export class Context {
-  sessions: Map<streamName, rawStream>;
+  sources: Map<StreamName, StreamSource>;
+  streamHub: StreamHub;
 
   constructor() {
-    this.sessions = new Map();
+    this.sources = new Map();
+    this.streamHub = new StreamHub();
   }
 }

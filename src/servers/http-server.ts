@@ -1,6 +1,6 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import type { Context } from "../core/context";
-import { FLVHandler } from "../core/flv-handler";
+import { FLVSession } from "../core/flv-session";
 
 export class HttpServer {
   constructor(private ctx: Context) {}
@@ -12,10 +12,7 @@ export class HttpServer {
 
     fastify.get<{ Params: { app: string; name: string } }>(
       "/:app/:name.flv",
-      (request, reply) => {
-        const handler = new FLVHandler(this.ctx, request, reply);
-        handler.run();
-      }
+      this.#handleFLV.bind(this)
     );
 
     fastify.listen(
@@ -27,5 +24,18 @@ export class HttpServer {
         console.log(`Server is now listening on ${address}`);
       }
     );
+  }
+
+  #handleFLV(
+    request: FastifyRequest<{ Params: { app: string; name: string } }>,
+    reply: FastifyReply
+  ) {
+    reply.header("access-control-allow-origin", "*");
+    reply.header("content-type", "video/x-flv");
+    reply.header("cache-control", "no-cache");
+    reply.header("connection", "keep-alive");
+
+    const session = new FLVSession(this.ctx, request, reply);
+    session.run();
   }
 }
